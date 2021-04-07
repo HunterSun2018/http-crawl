@@ -14,7 +14,9 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include "root_certificates.hpp"
 
 namespace beast = boost::beast;   // from <boost/beast.hpp>
 namespace http = beast::http;     // from <boost/beast/http.hpp>
@@ -22,9 +24,9 @@ namespace asio = boost::asio;     // from <boost/asio.hpp>
 namespace ssl = boost::asio::ssl; // from <boost/asio/ssl.hpp>
 
 using tcp = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
-using boost::asio::awaitable;
-using boost::asio::detached;
-using boost::asio::use_awaitable;
+using asio::awaitable;
+using asio::detached;
+using asio::use_awaitable;
 
 awaitable<void> do_session(
     std::string const &host,
@@ -37,6 +39,7 @@ awaitable<void> do_session(
     // These objects perform our I/O
     tcp::resolver resolver(ioc);
     beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
+    beast::error_code ec;
 
     // Set SNI Hostname (many hosts need this to handshake successfully)
     if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()))
@@ -59,6 +62,7 @@ awaitable<void> do_session(
 
     // Perform the SSL handshake
     co_await stream.async_handshake(ssl::stream_base::client, use_awaitable);
+    //stream.handshake(ssl::stream_base::client);
 
     // Set up an HTTP GET request message
     http::request<http::string_body> req{http::verb::get, target, version};
@@ -80,21 +84,28 @@ awaitable<void> do_session(
     // Receive the HTTP response
     co_await http::async_read(stream, b, res, use_awaitable);
 
+    std::ostringstream data;
+    data << res;
+    std::cout << res << std::endl;
+
     // Set the timeout.
-    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(30));
+    beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(5));
 
     // Gracefully close the stream
     beast::get_lowest_layer(stream).cancel();
 
     co_await stream.async_shutdown(use_awaitable);
 
+    //beast::get_lowest_layer(stream).close();
+
     // Rationale:
     // http://stackoverflow.com/questions/25587403/boost-asio-ssl-async-shutdown-always-finishes-with-an-error
+    std::cout << "end of sesseion" << std::endl;
 
     co_return;
 }
 
-void run()
+void run(std::string host, std::string port, std::string target, int version)
 {
     try
     {
@@ -115,9 +126,18 @@ void run()
         co_spawn(
             io_context,
             [=, &io_context, &ctx]() mutable {
-                return do_session(host, port, target, version, std::ref(io_context), std::ref(ctx));
+                try
+                {
+                    return do_session(host, port, target, version, std::ref(io_context), std::ref(ctx));
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << e.what() << '\n';
+                    throw e;
+                }
             },
             detached);
+        //auto data = do_session(host, port, target, version, std::ref(io_context), std::ref(ctx));
 
         io_context.run();
     }
